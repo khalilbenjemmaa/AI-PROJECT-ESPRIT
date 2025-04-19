@@ -1,7 +1,7 @@
 import os
 import io
 import torch
-import gdown
+import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,15 +23,27 @@ app.add_middleware(
 )
 
 # Configuration
-CHECKPOINT_PATH = "epoch_30.pt"  # Save the model checkpoint file directly here
-GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"  # File ID from Google Drive
+CHECKPOINT_PATH = "epoch_30.pt"
+
+# 🔁 Replace this with your actual Google Drive file ID
+GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
 GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
+
+# Function to download the file using requests
+def download_checkpoint():
+    print("⬇️ Downloading checkpoint...")
+    with requests.get(GDRIVE_URL, stream=True) as r:
+        if r.status_code == 200:
+            with open(CHECKPOINT_PATH, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            print("✅ Checkpoint downloaded successfully.")
+        else:
+            print(f"❌ Failed to download checkpoint: {r.status_code}")
 
 # Auto-download model if not found
 if not os.path.exists(CHECKPOINT_PATH):
-    print("⬇️ Downloading model checkpoint from Google Drive...")
-    gdown.download(GDRIVE_URL, CHECKPOINT_PATH, quiet=False)  # Use gdown to download the model
-    print("✅ Model checkpoint downloaded successfully.")
+    download_checkpoint()
 
 CLASS_NAMES = [
     "Background", "Bottle", "Can", "Chain", "Drink-carton", "Hook",
@@ -77,14 +89,18 @@ def log_error(e: Exception, file: UploadFile = None):
             "device": str(device)
         }
     }
+    
     if file:
         error_details["file_info"] = {
             "filename": file.filename,
             "content_type": file.content_type,
+            "size": file.size
         }
+    
     print("\n🔴 ERROR DETAILS:")
     for k, v in error_details.items():
         print(f"│ {k.upper():<15}: {v}")
+    
     return error_details
 
 def create_overlay(original_image, segmentation_mask, alpha=0.5):
@@ -92,18 +108,18 @@ def create_overlay(original_image, segmentation_mask, alpha=0.5):
     overlay = Image.blend(original_image.convert('RGB'), mask_resized, alpha)
     return overlay
 
-@app.post("/predict/")
+@app.post("/predict/") 
 async def predict_segmentation(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         file.file = io.BytesIO(contents)
-
+        
         try:
             original_image = Image.open(file.file)
             original_image.verify()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
-
+        
         file.file.seek(0)
         original_image = Image.open(file.file).convert("RGB")
         original_image_copy = original_image.copy()
@@ -117,19 +133,19 @@ async def predict_segmentation(file: UploadFile = File(...)):
         present_classes = np.unique(predicted).tolist()
         class_count = {CLASS_NAMES[idx]: np.sum(predicted == idx) for idx in present_classes}
         detected_classes = {CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]]) 
-                            for idx in present_classes if idx != 0}
+                          for idx in present_classes if idx != 0}
 
         color_mask = np.zeros((predicted.shape[0], predicted.shape[1], 3), dtype=np.uint8)
         for class_index, color in enumerate(CLASS_COLORS):
             color_mask[predicted == class_index] = color
 
         overlay_image = create_overlay(original_image_copy, color_mask)
-
+        
         def image_to_base64(img, format="PNG"):
             buffered = io.BytesIO()
             img.save(buffered, format=format)
             return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
+        
         return JSONResponse({
             "original_image_base64": image_to_base64(original_image),
             "segmentation_map_base64": image_to_base64(Image.fromarray(color_mask)),
@@ -141,15 +157,16 @@ async def predict_segmentation(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        log_error(e, file)
+        error_info = log_error(e, file)
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-@app.get("/class-info/")
+@app.get("/class-info/") 
 async def get_class_info():
     color_dict = {
         name: {"color": color, "id": i}
         for i, (name, color) in enumerate(zip(CLASS_NAMES, CLASS_COLORS))
     }
+    
     return JSONResponse({
         "class_names": CLASS_NAMES,
         "class_colors": color_dict
