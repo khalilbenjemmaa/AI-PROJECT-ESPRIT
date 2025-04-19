@@ -26,8 +26,9 @@ app.add_middleware(
 CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
 
 # 🔁 Replace this with your actual Google Drive file ID
-GDRIVE_FILE_ID = "your_google_drive_file_id_here"
+GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
 GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
+
 
 # Auto-download model if not found
 if not os.path.exists(CHECKPOINT_PATH):
