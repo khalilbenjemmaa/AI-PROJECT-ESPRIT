@@ -1,7 +1,7 @@
 import os
 import io
 import torch
-import requests
+import gdown
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +16,7 @@ app = FastAPI()
 # Add CORS to allow requests from Streamlit
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify the exact origin
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,21 +25,16 @@ app.add_middleware(
 # Configuration
 CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
 GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
-GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
+GDRIVE_URL = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
 
-# Auto-download model if not found
+# Auto-download model if not found using gdown
 if not os.path.exists(CHECKPOINT_PATH):
-    print("⬇️ Downloading model checkpoint from Google Drive...")
+    print("⬇️ Téléchargement du modèle depuis Google Drive avec gdown...")
     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-    response = requests.get(GDRIVE_URL)
-    if response.status_code == 200:
-        with open(CHECKPOINT_PATH, "wb") as f:
-            f.write(response.content)
-        print("✅ Model checkpoint downloaded successfully.")
-    else:
-        raise RuntimeError(f"❌ Failed to download checkpoint from Google Drive: {response.status_code}")
+    gdown.download(GDRIVE_URL, CHECKPOINT_PATH, quiet=False)
+    print("✅ Modèle téléchargé avec succès.")
 
-# Class info
+# Classes et couleurs
 CLASS_NAMES = [
     "Background", "Bottle", "Can", "Chain", "Drink-carton", "Hook",
     "Propeller", "Shampoo-bottle", "Standing-bottle", "Tire", "Valve", "Wall"
@@ -57,30 +52,24 @@ print(f"\n⚙️ Using device: {device}\n")
 
 # Load model
 try:
-    model = torch.hub.load(
-        'mateuszbuda/brain-segmentation-pytorch',
-        'unet',
-        in_channels=1,
-        out_channels=12,
-        init_features=64,
-        pretrained=False
-    )
+    model = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
+                           in_channels=1, out_channels=12, init_features=64, pretrained=False)
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval().to(device)
-    print("✅ Model loaded successfully")
+    print("✅ Modèle chargé avec succès")
 except Exception as e:
-    print(f"❌ Model loading failed: {str(e)}")
+    print(f"❌ Erreur lors du chargement du modèle: {str(e)}")
     raise
 
-# Image transformation
+# Transformations d'image
 transform = T.Compose([
     T.Grayscale(),
     T.Resize((256, 256)),
     T.ToTensor()
 ])
 
-# Error logging helper
+# Logger d'erreur
 def log_error(e: Exception, file: UploadFile = None):
     error_details = {
         "error": str(e),
@@ -95,19 +84,20 @@ def log_error(e: Exception, file: UploadFile = None):
         error_details["file_info"] = {
             "filename": file.filename,
             "content_type": file.content_type,
+            "size": file.size
         }
-    print("\n🔴 ERROR DETAILS:")
+    print("\n🔴 Détails de l'erreur :")
     for k, v in error_details.items():
         print(f"│ {k.upper():<15}: {v}")
     return error_details
 
-# Overlay creation
+# Overlay mask
 def create_overlay(original_image, segmentation_mask, alpha=0.5):
     mask_resized = Image.fromarray(segmentation_mask).resize(original_image.size, Image.NEAREST)
     overlay = Image.blend(original_image.convert('RGB'), mask_resized, alpha)
     return overlay
 
-# Prediction endpoint
+# Endpoint de prédiction
 @app.post("/predict/")
 async def predict_segmentation(file: UploadFile = File(...)):
     try:
@@ -118,7 +108,7 @@ async def predict_segmentation(file: UploadFile = File(...)):
             original_image = Image.open(file.file)
             original_image.verify()
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Fichier image invalide : {str(e)}")
 
         file.file.seek(0)
         original_image = Image.open(file.file).convert("RGB")
@@ -160,9 +150,9 @@ async def predict_segmentation(file: UploadFile = File(...)):
         raise
     except Exception as e:
         error_info = log_error(e, file)
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Échec de la prédiction : {str(e)}")
 
-# Class info endpoint
+# Endpoint info des classes
 @app.get("/class-info/")
 async def get_class_info():
     color_dict = {
