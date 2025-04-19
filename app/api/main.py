@@ -16,7 +16,7 @@ app = FastAPI()
 # Add CORS to allow requests from Streamlit
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, specify the exact origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,16 +25,14 @@ app.add_middleware(
 # Configuration
 CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
 GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
-GDRIVE_URL = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
 
-# Auto-download model if not found using gdown
+# Auto-download model if not found
 if not os.path.exists(CHECKPOINT_PATH):
-    print("⬇️ Téléchargement du modèle depuis Google Drive avec gdown...")
+    print("⬇️ Downloading model checkpoint from Google Drive...")
     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-    gdown.download(GDRIVE_URL, CHECKPOINT_PATH, quiet=False)
-    print("✅ Modèle téléchargé avec succès.")
+    gdown.download(id=GDRIVE_FILE_ID, output=CHECKPOINT_PATH, quiet=False)
+    print("✅ Model checkpoint downloaded successfully.")
 
-# Classes et couleurs
 CLASS_NAMES = [
     "Background", "Bottle", "Can", "Chain", "Drink-carton", "Hook",
     "Propeller", "Shampoo-bottle", "Standing-bottle", "Tire", "Valve", "Wall"
@@ -50,26 +48,25 @@ CLASS_COLORS = [
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n⚙️ Using device: {device}\n")
 
-# Load model
+# Model loading with validation
 try:
     model = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
-                           in_channels=1, out_channels=12, init_features=64, pretrained=False)
+                          in_channels=1, out_channels=12, init_features=64, pretrained=False)
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval().to(device)
-    print("✅ Modèle chargé avec succès")
+    print("✅ Model loaded successfully")
 except Exception as e:
-    print(f"❌ Erreur lors du chargement du modèle: {str(e)}")
+    print(f"❌ Model loading failed: {str(e)}")
     raise
 
-# Transformations d'image
+# Image transforms
 transform = T.Compose([
     T.Grayscale(),
     T.Resize((256, 256)),
     T.ToTensor()
 ])
 
-# Logger d'erreur
 def log_error(e: Exception, file: UploadFile = None):
     error_details = {
         "error": str(e),
@@ -84,20 +81,17 @@ def log_error(e: Exception, file: UploadFile = None):
         error_details["file_info"] = {
             "filename": file.filename,
             "content_type": file.content_type,
-            "size": file.size
         }
-    print("\n🔴 Détails de l'erreur :")
+    print("\n🔴 ERROR DETAILS:")
     for k, v in error_details.items():
         print(f"│ {k.upper():<15}: {v}")
     return error_details
 
-# Overlay mask
 def create_overlay(original_image, segmentation_mask, alpha=0.5):
     mask_resized = Image.fromarray(segmentation_mask).resize(original_image.size, Image.NEAREST)
     overlay = Image.blend(original_image.convert('RGB'), mask_resized, alpha)
     return overlay
 
-# Endpoint de prédiction
 @app.post("/predict/")
 async def predict_segmentation(file: UploadFile = File(...)):
     try:
@@ -108,7 +102,7 @@ async def predict_segmentation(file: UploadFile = File(...)):
             original_image = Image.open(file.file)
             original_image.verify()
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Fichier image invalide : {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
 
         file.file.seek(0)
         original_image = Image.open(file.file).convert("RGB")
@@ -122,10 +116,8 @@ async def predict_segmentation(file: UploadFile = File(...)):
 
         present_classes = np.unique(predicted).tolist()
         class_count = {CLASS_NAMES[idx]: np.sum(predicted == idx) for idx in present_classes}
-        detected_classes = {
-            CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]])
-            for idx in present_classes if idx != 0
-        }
+        detected_classes = {CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]]) 
+                            for idx in present_classes if idx != 0}
 
         color_mask = np.zeros((predicted.shape[0], predicted.shape[1], 3), dtype=np.uint8)
         for class_index, color in enumerate(CLASS_COLORS):
@@ -149,10 +141,9 @@ async def predict_segmentation(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        error_info = log_error(e, file)
-        raise HTTPException(status_code=500, detail=f"Échec de la prédiction : {str(e)}")
+        log_error(e, file)
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-# Endpoint info des classes
 @app.get("/class-info/")
 async def get_class_info():
     color_dict = {
@@ -164,7 +155,6 @@ async def get_class_info():
         "class_colors": color_dict
     })
 
-# Health check
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "model_loaded": True}
