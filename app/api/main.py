@@ -24,11 +24,8 @@ app.add_middleware(
 
 # Configuration
 CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
-
-# 🔁 Replace this with your actual Google Drive file ID
 GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
 GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
-
 
 # Auto-download model if not found
 if not os.path.exists(CHECKPOINT_PATH):
@@ -40,8 +37,9 @@ if not os.path.exists(CHECKPOINT_PATH):
             f.write(response.content)
         print("✅ Model checkpoint downloaded successfully.")
     else:
-        raise RuntimeError(f"Failed to download checkpoint from Google Drive: {response.status_code}")
+        raise RuntimeError(f"❌ Failed to download checkpoint from Google Drive: {response.status_code}")
 
+# Class info
 CLASS_NAMES = [
     "Background", "Bottle", "Can", "Chain", "Drink-carton", "Hook",
     "Propeller", "Shampoo-bottle", "Standing-bottle", "Tire", "Valve", "Wall"
@@ -57,10 +55,16 @@ CLASS_COLORS = [
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n⚙️ Using device: {device}\n")
 
-# Model loading with validation
+# Load model
 try:
-    model = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
-                          in_channels=1, out_channels=12, init_features=64, pretrained=False)
+    model = torch.hub.load(
+        'mateuszbuda/brain-segmentation-pytorch',
+        'unet',
+        in_channels=1,
+        out_channels=12,
+        init_features=64,
+        pretrained=False
+    )
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval().to(device)
@@ -69,13 +73,14 @@ except Exception as e:
     print(f"❌ Model loading failed: {str(e)}")
     raise
 
-# Image transforms
+# Image transformation
 transform = T.Compose([
     T.Grayscale(),
     T.Resize((256, 256)),
     T.ToTensor()
 ])
 
+# Error logging helper
 def log_error(e: Exception, file: UploadFile = None):
     error_details = {
         "error": str(e),
@@ -86,37 +91,35 @@ def log_error(e: Exception, file: UploadFile = None):
             "device": str(device)
         }
     }
-    
     if file:
         error_details["file_info"] = {
             "filename": file.filename,
             "content_type": file.content_type,
-            "size": file.size
         }
-    
     print("\n🔴 ERROR DETAILS:")
     for k, v in error_details.items():
         print(f"│ {k.upper():<15}: {v}")
-    
     return error_details
 
+# Overlay creation
 def create_overlay(original_image, segmentation_mask, alpha=0.5):
     mask_resized = Image.fromarray(segmentation_mask).resize(original_image.size, Image.NEAREST)
     overlay = Image.blend(original_image.convert('RGB'), mask_resized, alpha)
     return overlay
 
+# Prediction endpoint
 @app.post("/predict/")
 async def predict_segmentation(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         file.file = io.BytesIO(contents)
-        
+
         try:
             original_image = Image.open(file.file)
             original_image.verify()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
-        
+
         file.file.seek(0)
         original_image = Image.open(file.file).convert("RGB")
         original_image_copy = original_image.copy()
@@ -129,20 +132,22 @@ async def predict_segmentation(file: UploadFile = File(...)):
 
         present_classes = np.unique(predicted).tolist()
         class_count = {CLASS_NAMES[idx]: np.sum(predicted == idx) for idx in present_classes}
-        detected_classes = {CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]]) 
-                          for idx in present_classes if idx != 0}
+        detected_classes = {
+            CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]])
+            for idx in present_classes if idx != 0
+        }
 
         color_mask = np.zeros((predicted.shape[0], predicted.shape[1], 3), dtype=np.uint8)
         for class_index, color in enumerate(CLASS_COLORS):
             color_mask[predicted == class_index] = color
 
         overlay_image = create_overlay(original_image_copy, color_mask)
-        
+
         def image_to_base64(img, format="PNG"):
             buffered = io.BytesIO()
             img.save(buffered, format=format)
             return base64.b64encode(buffered.getvalue()).decode("utf-8")
-        
+
         return JSONResponse({
             "original_image_base64": image_to_base64(original_image),
             "segmentation_map_base64": image_to_base64(Image.fromarray(color_mask)),
@@ -157,18 +162,19 @@ async def predict_segmentation(file: UploadFile = File(...)):
         error_info = log_error(e, file)
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
+# Class info endpoint
 @app.get("/class-info/")
 async def get_class_info():
     color_dict = {
         name: {"color": color, "id": i}
         for i, (name, color) in enumerate(zip(CLASS_NAMES, CLASS_COLORS))
     }
-    
     return JSONResponse({
         "class_names": CLASS_NAMES,
         "class_colors": color_dict
     })
 
+# Health check
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "model_loaded": True}
