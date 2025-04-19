@@ -23,14 +23,14 @@ app.add_middleware(
 )
 
 # Configuration
-CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
-GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"
+CHECKPOINT_PATH = "epoch_30.pt"  # Save the model checkpoint file directly here
+GDRIVE_FILE_ID = "1DeTPtUEZI9b1C9f4OsTzGCk-febyUCvW"  # File ID from Google Drive
+GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
 
 # Auto-download model if not found
 if not os.path.exists(CHECKPOINT_PATH):
     print("⬇️ Downloading model checkpoint from Google Drive...")
-    os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-    gdown.download(id=GDRIVE_FILE_ID, output=CHECKPOINT_PATH, quiet=False)
+    gdown.download(GDRIVE_URL, CHECKPOINT_PATH, quiet=False)  # Use gdown to download the model
     print("✅ Model checkpoint downloaded successfully.")
 
 CLASS_NAMES = [
