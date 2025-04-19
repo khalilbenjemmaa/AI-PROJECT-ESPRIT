@@ -1,6 +1,7 @@
 import os
 import io
 import torch
+import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,8 +23,23 @@ app.add_middleware(
 )
 
 # Configuration
-CHECKPOINT_PATH = r"C:\Users\HKrid\OneDrive - Linedata Services, Inc\Desktop\seg\trained_modal\epoch_30.pt"
-VALID_IMAGE_PATH = r"C:\Users\HKrid\OneDrive - Linedata Services, Inc\Desktop\seg\data\Images\marine-debris-aris3k-1.png"
+CHECKPOINT_PATH = "trained_modal/epoch_30.pt"
+
+# 🔁 Replace this with your actual Google Drive file ID
+GDRIVE_FILE_ID = "your_google_drive_file_id_here"
+GDRIVE_URL = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
+
+# Auto-download model if not found
+if not os.path.exists(CHECKPOINT_PATH):
+    print("⬇️ Downloading model checkpoint from Google Drive...")
+    os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
+    response = requests.get(GDRIVE_URL)
+    if response.status_code == 200:
+        with open(CHECKPOINT_PATH, "wb") as f:
+            f.write(response.content)
+        print("✅ Model checkpoint downloaded successfully.")
+    else:
+        raise RuntimeError(f"Failed to download checkpoint from Google Drive: {response.status_code}")
 
 CLASS_NAMES = [
     "Background", "Bottle", "Can", "Chain", "Drink-carton", "Hook",
@@ -35,12 +51,6 @@ CLASS_COLORS = [
     (255, 255, 0), (255, 0, 255), (0, 255, 255), (128, 0, 128),
     (255, 165, 0), (128, 128, 0), (0, 128, 128), (192, 192, 192)
 ]
-
-# Path validation with meaningful error messages
-if not os.path.exists(CHECKPOINT_PATH):
-    raise ValueError(f"Checkpoint not found at {CHECKPOINT_PATH}")
-if not os.path.exists(VALID_IMAGE_PATH):
-    raise ValueError(f"Sample image not found at {VALID_IMAGE_PATH}")
 
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,7 +76,6 @@ transform = T.Compose([
 ])
 
 def log_error(e: Exception, file: UploadFile = None):
-    """Log detailed error information"""
     error_details = {
         "error": str(e),
         "traceback": traceback.format_exc(),
@@ -91,62 +100,48 @@ def log_error(e: Exception, file: UploadFile = None):
     return error_details
 
 def create_overlay(original_image, segmentation_mask, alpha=0.5):
-    """Create an overlay of segmentation on the original image with transparency"""
-    # Resize mask to match original image dimensions
     mask_resized = Image.fromarray(segmentation_mask).resize(original_image.size, Image.NEAREST)
-    
-    # Create overlay
     overlay = Image.blend(original_image.convert('RGB'), mask_resized, alpha)
-    
     return overlay
 
 @app.post("/predict/")
 async def predict_segmentation(file: UploadFile = File(...)):
     try:
-        # Load and verify image
         contents = await file.read()
-        file.file = io.BytesIO(contents)  # Reset file pointer after reading
+        file.file = io.BytesIO(contents)
         
         try:
             original_image = Image.open(file.file)
-            original_image.verify()  # Verify image integrity
+            original_image.verify()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
         
-        # Reset file pointer and open again
         file.file.seek(0)
         original_image = Image.open(file.file).convert("RGB")
-        original_image_copy = original_image.copy()  # Make a copy for overlay
+        original_image_copy = original_image.copy()
 
-        # Apply transforms for model input
         tensor_img = transform(original_image).unsqueeze(0).to(device)
 
-        # Model prediction
         with torch.no_grad():
             output = model(tensor_img)
             predicted = torch.argmax(output.squeeze(), dim=0).cpu().numpy()
 
-        # Process results
         present_classes = np.unique(predicted).tolist()
         class_count = {CLASS_NAMES[idx]: np.sum(predicted == idx) for idx in present_classes}
         detected_classes = {CLASS_NAMES[idx]: int(class_count[CLASS_NAMES[idx]]) 
                           for idx in present_classes if idx != 0}
 
-        # Generate color mask
         color_mask = np.zeros((predicted.shape[0], predicted.shape[1], 3), dtype=np.uint8)
         for class_index, color in enumerate(CLASS_COLORS):
             color_mask[predicted == class_index] = color
 
-        # Create overlay image
         overlay_image = create_overlay(original_image_copy, color_mask)
         
-        # Convert all images to base64
         def image_to_base64(img, format="PNG"):
             buffered = io.BytesIO()
             img.save(buffered, format=format)
             return base64.b64encode(buffered.getvalue()).decode("utf-8")
         
-        # Return all needed images and data
         return JSONResponse({
             "original_image_base64": image_to_base64(original_image),
             "segmentation_map_base64": image_to_base64(Image.fromarray(color_mask)),
@@ -155,8 +150,7 @@ async def predict_segmentation(file: UploadFile = File(...)):
             "class_colors": {CLASS_NAMES[i]: CLASS_COLORS[i] for i in range(len(CLASS_NAMES))}
         })
 
-    except HTTPException as he:
-        # Re-raise HTTP exceptions
+    except HTTPException:
         raise
     except Exception as e:
         error_info = log_error(e, file)
@@ -164,10 +158,10 @@ async def predict_segmentation(file: UploadFile = File(...)):
 
 @app.get("/class-info/")
 async def get_class_info():
-    """Endpoint to get class names and their colors"""
-    color_dict = {}
-    for i, (name, color) in enumerate(zip(CLASS_NAMES, CLASS_COLORS)):
-        color_dict[name] = {"color": color, "id": i}
+    color_dict = {
+        name: {"color": color, "id": i}
+        for i, (name, color) in enumerate(zip(CLASS_NAMES, CLASS_COLORS))
+    }
     
     return JSONResponse({
         "class_names": CLASS_NAMES,
@@ -176,5 +170,4 @@ async def get_class_info():
 
 @app.get("/health")
 async def health_check():
-    """Simple health check endpoint"""
     return {"status": "ok", "model_loaded": True}
